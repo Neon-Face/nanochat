@@ -380,11 +380,13 @@ class RustBPETokenizer:
 # nanochat-specific convenience functions
 
 def get_tokenizer():
-    from nanochat.common import get_base_dir
-    base_dir = get_base_dir()
-    tokenizer_dir = os.path.join(base_dir, "tokenizer")
-    # return HuggingFaceTokenizer.from_directory(tokenizer_dir)
-    return RustBPETokenizer.from_directory(tokenizer_dir)
+    # from nanochat.common import get_base_dir
+    # base_dir = get_base_dir()
+    # tokenizer_dir = os.path.join(base_dir, "tokenizer")
+    # # return HuggingFaceTokenizer.from_directory(tokenizer_dir)
+    # return RustBPETokenizer.from_directory(tokenizer_dir)
+    from nanochat.tokenizer_ipv6 import IPv6SegmentTokenizer
+    return IPv6SegmentTokenizer()
 
 def get_token_bytes(device="cpu"):
     import torch
