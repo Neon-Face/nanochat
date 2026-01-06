@@ -1,74 +1,131 @@
 """
-6GPT Data Prep: Convert raw IPv6 text file to Parquet shards.
+Low Memory IPv6 Data Prep for MacBook M3 Air.
+Strategy: Random Bucketing -> Local Dedup -> Parquet
 """
+
 import os
+import lzma
+import random
+import shutil
+import ipaddress
 import pyarrow as pa
 import pyarrow.parquet as pq
-import random
+from tqdm import tqdm
 
-# 1. 配置
-INPUT_FILE = "data/ipv6_addresses.txt" # 你的原始数据
-OUTPUT_DIR = "/Users/yourname/.cache/nanochat/base_data" # Mac上的缓存目录
-ROW_GROUP_SIZE = 1024 # 每次读取的行数
-DOCS_PER_SHARD = 100000 # 每个文件存多少个IP (根据你的内存调整)
+# ================= CONFIGURATION =================
+INPUT_FILE = "../data/responsive-addresses.txt.xz"
+OUTPUT_DIR = os.path.expanduser("~/.cache/nanochat/base_data")
+TEMP_DIR = "data/temp_buckets" # 临时文件夹
 
-os.makedirs(OUTPUT_DIR, exist_ok=True)
+# 将数据随机分散到多少个桶里。
+# 1GB 压缩数据 -> 解压约 15GB。
+# 分 100 个桶 -> 每个桶 150MB。Mac M3 处理起来轻轻松松。
+NUM_BUCKETS = 100 
 
-# 2. 读取并打乱
-print(f"Reading {INPUT_FILE}...")
-with open(INPUT_FILE, 'r') as f:
-    # 假设每行一个IP，去掉换行符
-    all_ips = [line.strip() for line in f if line.strip()]
+DOCS_PER_SHARD = 200000 
+# =================================================
 
-print(f"Total IPs: {len(all_ips)}. Shuffling...")
-random.seed(42)
-random.shuffle(all_ips)
+def expand_ipv6(ip_str):
+    try:
+        return ipaddress.IPv6Address(ip_str).exploded
+    except ValueError:
+        return None
 
-# 3. 分片写入
-shard_index = 0
-current_shard_docs = []
+def process_low_memory():
+    if not os.path.exists(INPUT_FILE):
+        print(f"Error: {INPUT_FILE} not found.")
+        return
 
-# 切分 Train/Val (例如留后 1000 个做验证)
-split_index = len(all_ips) - 1000
-train_ips = all_ips[:split_index]
-val_ips = all_ips[split_index:]
+    # 1. 准备目录
+    if os.path.exists(TEMP_DIR):
+        shutil.rmtree(TEMP_DIR)
+    os.makedirs(TEMP_DIR)
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-def write_shard(docs, index, split_name="train"):
-    filename = f"shard_{index:05d}.parquet"
-    # 如果是 val 集，最好用特殊命名，或者遵循 nanochat 逻辑(最后一个是val)
-    # 这里我们简单起见，遵循 nanochat 逻辑：所有的都是 shard_xxxxx
-    # 但 nanochat 的 dataset.py 假设最后一个文件是 val。
+    # 打开所有桶的文件句柄
+    print(f"Step 1: Streaming & Random Bucketing into {NUM_BUCKETS} files...")
+    bucket_files = []
+    try:
+        # 创建 100 个临时文件
+        for i in range(NUM_BUCKETS):
+            f = open(os.path.join(TEMP_DIR, f"bucket_{i}.txt"), 'w')
+            bucket_files.append(f)
+
+        # 流式读取 xz
+        with lzma.open(INPUT_FILE, mode='rt', encoding='utf-8') as fin:
+            for line in tqdm(fin, desc="Distributing"):
+                line = line.strip()
+                if not line or line.startswith('#'):
+                    continue
+                
+                # 随机选一个桶写入 (这实现了全局打乱！)
+                # 我们先不展开，为了节省临时文件的写入体积和IO
+                # 也不去重，留到桶内处理
+                bucket_idx = random.randint(0, NUM_BUCKETS - 1)
+                bucket_files[bucket_idx].write(line + '\n')
+
+    finally:
+        # 关闭所有文件
+        for f in bucket_files:
+            f.close()
+
+    print("\nStep 2: Processing Buckets (Expand, Dedup, Parquet)...")
     
-    path = os.path.join(OUTPUT_DIR, filename)
-    table = pa.Table.from_pydict({"text": docs}) # 必须叫 'text' 列
-    pq.write_table(table, path, row_group_size=ROW_GROUP_SIZE)
-    print(f"Wrote {path} ({len(docs)} IPs)")
+    shard_index = 0
+    total_processed_ips = 0
 
-# 写入训练集
-for ip in train_ips:
-    current_shard_docs.append(ip)
+    # 遍历每个桶
+    for i in range(NUM_BUCKETS):
+        bucket_path = os.path.join(TEMP_DIR, f"bucket_{i}.txt")
+        if not os.path.exists(bucket_path):
+            continue
+            
+        # 读取桶内容到内存 (此时只有总数据的 1/100，很小)
+        with open(bucket_path, 'r') as f:
+            raw_lines = f.readlines()
+        
+        # 桶内去重 & 展开
+        unique_ips = set()
+        for line in raw_lines:
+            expanded = expand_ipv6(line.strip())
+            if expanded:
+                unique_ips.add(expanded)
+        
+        # 转为列表并打乱 (桶内打乱)
+        # 此时 list 很小，shuffle 很快
+        ip_list = list(unique_ips)
+        random.shuffle(ip_list)
+        
+        # 写入 Parquet
+        # 注意：这里我们可能一个桶生成多个 shard，或者多个桶凑一个 shard
+        # 为简单起见，我们把桶里的数据按 DOCS_PER_SHARD 切分写入
+        
+        current_idx = 0
+        while current_idx < len(ip_list):
+            chunk = ip_list[current_idx : current_idx + DOCS_PER_SHARD]
+            
+            # 如果 chunk 太小（比如桶末尾只剩几个IP），其实可以直接写，
+            # Dataset.py 能处理小文件。
+            if len(chunk) > 0:
+                table = pa.Table.from_pydict({"text": chunk})
+                shard_name = f"shard_{shard_index:05d}.parquet"
+                pq.write_table(table, os.path.join(OUTPUT_DIR, shard_name), compression='zstd')
+                shard_index += 1
+                total_processed_ips += len(chunk)
+            
+            current_idx += DOCS_PER_SHARD
+            
+        # 释放内存
+        del unique_ips
+        del ip_list
+        print(f"Processed Bucket {i+1}/{NUM_BUCKETS} - Total IPs so far: {total_processed_ips:,}", end='\r')
+
+    # 清理临时文件
+    print(f"\nCleaning up temp files...")
+    shutil.rmtree(TEMP_DIR)
     
-    # 攒够了一个 shard 或者 凑齐了 row_group 倍数
-    if len(current_shard_docs) >= DOCS_PER_SHARD and len(current_shard_docs) % ROW_GROUP_SIZE == 0:
-        write_shard(current_shard_docs, shard_index)
-        current_shard_docs = []
-        shard_index += 1
+    print(f"\nAll Done! Generated {shard_index} shards containing {total_processed_ips:,} IPs.")
+    print(f"Data saved to: {OUTPUT_DIR}")
 
-# 写入剩余的训练集 (如果有)
-if current_shard_docs:
-    # 补齐到 row_group_size (可选，但为了并行不出错最好补齐)
-    remainder = len(current_shard_docs) % ROW_GROUP_SIZE
-    if remainder != 0:
-        padding = ["<|pad|>"] * (ROW_GROUP_SIZE - remainder) # 使用你的 pad token
-        current_shard_docs.extend(padding)
-    write_shard(current_shard_docs, shard_index)
-    shard_index += 1
-
-# 写入验证集 (作为最后一个 shard)
-# 同样补齐
-remainder = len(val_ips) % ROW_GROUP_SIZE
-if remainder != 0:
-    val_ips.extend(["<|pad|>"] * (ROW_GROUP_SIZE - remainder))
-write_shard(val_ips, shard_index)
-
-print("Done!")
+if __name__ == "__main__":
+    process_low_memory()

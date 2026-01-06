@@ -1,3 +1,10 @@
+# 6-GPT
+
+1. Training Diary:
+step 00999/01000 (99.90%) | loss: 5.426808 | grad norm: 0.1589 | lrm: 0.01 | dt: 2890.35ms | tok/sec: 2,834 | mfu: 0.06 | total time: 43.33m
+
+
+
 # nanochat
 
 ![nanochat logo](dev/nanochat.png)

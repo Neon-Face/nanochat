@@ -388,13 +388,27 @@ def get_tokenizer():
     from nanochat.tokenizer_ipv6 import IPv6SegmentTokenizer
     return IPv6SegmentTokenizer()
 
+# def get_token_bytes(device="cpu"):
+#     import torch
+#     from nanochat.common import get_base_dir
+#     base_dir = get_base_dir()
+#     tokenizer_dir = os.path.join(base_dir, "tokenizer")
+#     token_bytes_path = os.path.join(tokenizer_dir, "token_bytes.pt")
+#     assert os.path.exists(token_bytes_path), f"Token bytes not found at {token_bytes_path}? It gets written by tok_train.py"
+#     with open(token_bytes_path, "rb") as f:
+#         token_bytes = torch.load(f, map_location=device)
+#     return token_bytes
+
 def get_token_bytes(device="cpu"):
+    """
+    HACK for 6GPT:
+    由于我们使用的是自定义的规则 Tokenizer，没有经过 BPE 训练，
+    所以不存在 token_bytes.pt 文件。
+    
+    为了防止 base_train.py 报错，我们返回一个伪造的 Tensor。
+    后果：训练日志里的 "Validation bpb" 数值将没有意义（请忽略它），
+    你应该只关注 "loss"。
+    """
     import torch
-    from nanochat.common import get_base_dir
-    base_dir = get_base_dir()
-    tokenizer_dir = os.path.join(base_dir, "tokenizer")
-    token_bytes_path = os.path.join(tokenizer_dir, "token_bytes.pt")
-    assert os.path.exists(token_bytes_path), f"Token bytes not found at {token_bytes_path}? It gets written by tok_train.py"
-    with open(token_bytes_path, "rb") as f:
-        token_bytes = torch.load(f, map_location=device)
-    return token_bytes
+    # 返回一个随机的 dummy tensor，长度设为 10000 防止除以零
+    return torch.randint(0, 255, (10000,), dtype=torch.uint8, device=device)

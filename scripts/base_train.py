@@ -255,19 +255,17 @@ while True:
     if master_process and (last_step or (step > 0 and step % sample_every == 0)):
         model.eval()
         prompts = [
-            "The capital of France is",
-            "The chemical symbol of gold is",
-            "If yesterday was Friday, then tomorrow will be",
-            "The opposite of hot is",
-            "The planets of the solar system are:",
-            "My favorite color is",
-            "If 5*x + 3 = 13, then x is",
+            "2001:0db8",          # 文档示例前缀
+            "2409:8a00",          # 中国移动常见前缀
+            "2a00:1450",          # Google
+            "2606:4700",          # Cloudflare
+            "fe80::",             # 链路本地
         ]
         engine = Engine(orig_model, tokenizer) # use orig_model to avoid recompilation
         for prompt in prompts:
             tokens = tokenizer(prompt, prepend="<|bos|>")
             with autocast_ctx:
-                sample, _ = engine.generate_batch(tokens, num_samples=1, max_tokens=16, temperature=0)
+                sample, _ = engine.generate_batch(tokens, num_samples=1, max_tokens=10, temperature=0.8)
             print0(tokenizer.decode(sample[0]))
         model.train()
     
